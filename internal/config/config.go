@@ -1,0 +1,34 @@
+package config
+
+import (
+	"time"
+)
+
+// Config is the root configuration object for Sentinel
+type Config struct {
+	ServiceNow  ServiceNowConfig `yaml:"servicenow"`
+	Services    []Service        `yaml:"services"`
+	Remediation Remediation      `yaml:"remediation_defaults"`
+}
+
+// ServiceNowConfig handles connectivity to the mock ITSM
+type ServiceNowConfig struct {
+	InstanceURL string `yaml:"instance_url"`
+	Username    string `yaml:"username"`
+	Password    string `yaml:"password"` // In prod, use env vars/secrets
+}
+
+// Service defines what we are monitoring
+type Service struct {
+	Name        string `yaml:"name"`
+	Type        string `yaml:"type"`   // http, tcp, systemd
+	Target      string `yaml:"target"` // URL, Port, or Service Name
+	CheckInterval time.Duration `yaml:"check_interval"`
+}
+
+// Remediation defines the safety guardrails
+type Remediation struct {
+	MaxRetries      int           `yaml:"max_retries"`
+	CooldownPeriod  time.Duration `yaml:"cooldown_period"`
+	CircuitBreaker  int           `yaml:"circuit_breaker_threshold"`
+}

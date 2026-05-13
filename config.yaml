@@ -1,0 +1,20 @@
+servicenow:
+  instance_url: "https://dev-mock.service-now.com"
+  username: "sentinel_svc"
+  password: "securepassword123"
+
+remediation_defaults:
+  max_retries: 3
+  cooldown_period: 5m
+  circuit_breaker_threshold: 5
+
+services:
+  - name: "nginx-frontend"
+    type: "systemd"
+    target: "nginx"
+    check_interval: 30s
+  
+  - name: "inventory-api"
+    type: "http"
+    target: "http://localhost:8080/health"
+    check_interval: 15s
