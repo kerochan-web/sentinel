@@ -3,18 +3,17 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
+	"time"
 
 	"github.com/kerochan-web/sentinel/internal/config"
-	"github.com/kerochan-web/sentinel/pkg/models"
-	"gopkg.in/yaml.v3"
+	"github.com/kerochan-web/sentinel/internal/monitor"
 )
 
 func main() {
 	fmt.Println("--- Sentinel: Automated Remediation Platform ---")
 
 	// 1. Load Configuration
-	cfg, err := loadConfig("config.yaml")
+	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -22,26 +21,25 @@ func main() {
 	fmt.Printf("Successfully loaded configuration for %d services.\n", len(cfg.Services))
 	fmt.Printf("ServiceNow Target: %s\n", cfg.ServiceNow.InstanceURL)
 
-	// 2. Placeholder for ServiceNow logic
-	mockInc := models.Incident{
-		SysID:            "8d8e5e9b1b1a4d00e8f6e0c6e14bcb2a", // Standard 32-char sys_id
-		Number:           "INC0000001",
-		ShortDescription: "Service monitor initialization",
-		State:            models.StateNew,
+	// 2. Simple Monitoring Loop
+	// In a real scenario, this would run in a Ticker or as Goroutines
+	for {
+		fmt.Println("\n--- Starting Health Check Round ---")
+		for _, svc := range cfg.Services {
+			isHealthy := monitor.Check(svc)
+			
+			status := "UP"
+			if !isHealthy {
+				status = "DOWN"
+			}
+
+			fmt.Printf("[%s] Service: %s | Target: %s | Status: %s\n", 
+				time.Now().Format("15:04:05"), svc.Name, svc.Target, status)
+			
+			// If DOWN, this is where we'll eventually trigger the ITSM/Remediation logic
+		}
+		
+		fmt.Println("Waiting for next check...")
+		time.Sleep(10 * time.Second) 
 	}
-
-	fmt.Printf("Monitoring active for: %s (State: %d)\n", mockInc.Number, mockInc.State)
-}
-
-func loadConfig(path string) (*config.Config, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var cfg config.Config
-	decoder := yaml.NewDecoder(f)
-	err = decoder.Decode(&cfg)
-	return &cfg, err
 }

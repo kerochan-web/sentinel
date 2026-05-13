@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"time"
+	"gopkg.in/yaml.v3"
 )
 
 // Config is the root configuration object for Sentinel
@@ -31,4 +33,17 @@ type Remediation struct {
 	MaxRetries      int           `yaml:"max_retries"`
 	CooldownPeriod  time.Duration `yaml:"cooldown_period"`
 	CircuitBreaker  int           `yaml:"circuit_breaker_threshold"`
+}
+
+func LoadConfig(path string) (*Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var cfg Config
+	decoder := yaml.NewDecoder(f)
+	err = decoder.Decode(&cfg)
+	return &cfg, err
 }
