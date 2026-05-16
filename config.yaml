@@ -16,5 +16,5 @@ services:
   
   - name: "inventory-api"
     type: "http"
-    target: "http://localhost:8080/health"
+    target: "http://localhost:6969/health"
     check_interval: 15s

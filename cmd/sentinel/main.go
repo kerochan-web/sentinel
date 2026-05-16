@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kerochan-web/sentinel/internal/config"
+    "github.com/kerochan-web/sentinel/internal/itsm"
 	"github.com/kerochan-web/sentinel/internal/monitor"
 )
 
@@ -21,25 +22,21 @@ func main() {
 	fmt.Printf("Successfully loaded configuration for %d services.\n", len(cfg.Services))
 	fmt.Printf("ServiceNow Target: %s\n", cfg.ServiceNow.InstanceURL)
 
-	// 2. Simple Monitoring Loop
-	// In a real scenario, this would run in a Ticker or as Goroutines
+    // 2. Initialize the Incident Engine
+	engine := itsm.NewEngine()
+
+	fmt.Printf("Monitoring %d services...\n", len(cfg.Services))
+
+	// 3. Execution Loop
 	for {
-		fmt.Println("\n--- Starting Health Check Round ---")
 		for _, svc := range cfg.Services {
+			// Perform health check
 			isHealthy := monitor.Check(svc)
 			
-			status := "UP"
-			if !isHealthy {
-				status = "DOWN"
-			}
-
-			fmt.Printf("[%s] Service: %s | Target: %s | Status: %s\n", 
-				time.Now().Format("15:04:05"), svc.Name, svc.Target, status)
-			
-			// If DOWN, this is where we'll eventually trigger the ITSM/Remediation logic
+			// Let the Engine decide what to do with the result
+			engine.ProcessCheck(svc, isHealthy)
 		}
 		
-		fmt.Println("Waiting for next check...")
 		time.Sleep(10 * time.Second) 
 	}
 }
