@@ -24,20 +24,27 @@ func NewEngine() *Engine {
 func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 	existingInc, exists := e.activeIncidents[svc.Name]
 
-	if !isHealthy && !exists {
-		// Case: Service just failed and we don't have a ticket yet
-		newInc := &models.Incident{
-			SysID:            fmt.Sprintf("mock-sys-%d", time.Now().Unix()), // 32-char mock
-			Number:           fmt.Sprintf("INC%07d", 1000+len(e.activeIncidents)+1),
-			ShortDescription: fmt.Sprintf("CRITICAL: %s check failed for %s", svc.Type, svc.Name),
-			State:            models.StateNew,
-			Severity:         1, // High
-			OpenedAt:         time.Now(),
+	if !isHealthy {
+		// 1. Check if we are in a maintenance window
+		if svc.Maintenance && time.Now().Before(svc.MaintenanceUntil) {
+			fmt.Printf("[Incident Engine] %s is DOWN, but Maintenance is ACTIVE until %s. Skipping incident creation.\n", 
+				svc.Name, svc.MaintenanceUntil.Format(time.RFC3339))
+			return
 		}
-		
-		e.activeIncidents[svc.Name] = newInc
-		fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
 
+		// 2. No maintenance? Create ticket if it doesn't exist
+		if !exists {
+			newInc := &models.Incident{
+				SysID:            fmt.Sprintf("mock-sys-%d", time.Now().Unix()),
+				Number:           fmt.Sprintf("INC%07d", 1000+len(e.activeIncidents)+1),
+				ShortDescription: fmt.Sprintf("CRITICAL: %s check failed for %s", svc.Type, svc.Name),
+				State:            models.StateNew,
+				Severity:         1,
+				OpenedAt:         time.Now(),
+			}
+			e.activeIncidents[svc.Name] = newInc
+			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
+		}
 	} else if isHealthy && exists {
 		// Case: Service was down but is now back UP
 		fmt.Printf("[Incident Engine] <<< RECOVERY: Resolving Ticket %s for %s\n", existingInc.Number, svc.Name)

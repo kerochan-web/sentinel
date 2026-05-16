@@ -13,8 +13,11 @@ services:
     type: "systemd"
     target: "nginx"
     check_interval: 30s
+    maintenance: true
+    maintenance_until: "2026-05-16T14:00:00Z"
   
   - name: "inventory-api"
     type: "http"
     target: "http://localhost:6969/health"
     check_interval: 15s
+    maintenance: false

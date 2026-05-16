@@ -26,6 +26,8 @@ type Service struct {
 	Type        string `yaml:"type"`   // http, tcp, systemd
 	Target      string `yaml:"target"` // URL, Port, or Service Name
 	CheckInterval time.Duration `yaml:"check_interval"`
+	Maintenance      bool          `yaml:"maintenance"`
+	MaintenanceUntil time.Time     `yaml:"maintenance_until"`
 }
 
 // Remediation defines the safety guardrails
