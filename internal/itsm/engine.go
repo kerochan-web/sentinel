@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kerochan-web/sentinel/internal/config"
+	"github.com/kerochan-web/sentinel/internal/remediation"
 	"github.com/kerochan-web/sentinel/pkg/models"
 )
 
@@ -25,14 +26,13 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 	existingInc, exists := e.activeIncidents[svc.Name]
 
 	if !isHealthy {
-		// 1. Check if we are in a maintenance window
+		// 1. Maintenance Check
 		if svc.Maintenance && time.Now().Before(svc.MaintenanceUntil) {
-			fmt.Printf("[Incident Engine] %s is DOWN, but Maintenance is ACTIVE until %s. Skipping incident creation.\n", 
-				svc.Name, svc.MaintenanceUntil.Format(time.RFC3339))
+			fmt.Printf("[Incident Engine] %s is DOWN (Maintenance Active). Skipping.\n", svc.Name)
 			return
 		}
 
-		// 2. No maintenance? Create ticket if it doesn't exist
+		// 2. Incident Creation
 		if !exists {
 			newInc := &models.Incident{
 				SysID:            fmt.Sprintf("mock-sys-%d", time.Now().Unix()),
@@ -44,6 +44,12 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			}
 			e.activeIncidents[svc.Name] = newInc
 			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
+
+			// 3. Simple Remediation Trigger
+			err := remediation.Perform(svc)
+			if err != nil {
+				fmt.Printf("[Incident Engine] Remediation failed: %v\n", err)
+			}
 		}
 	} else if isHealthy && exists {
 		// Case: Service was down but is now back UP
