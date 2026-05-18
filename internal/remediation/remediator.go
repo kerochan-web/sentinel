@@ -2,7 +2,7 @@ package remediation
 
 import (
 	"fmt"
-	// "os/exec"
+	"os/exec"
 	// "runtime"
 
 	"github.com/kerochan-web/sentinel/internal/config"
@@ -19,9 +19,16 @@ func Perform(svc config.Service) error {
 		return nil
 
 	case "http":
-		// For HTTP, remediation often involves restarting a process or container.
-		// For now, we just log the intent.
-		fmt.Printf("[Remediator] HTTP recovery: No automated action defined for URL targets yet.\n")
+		// We'll simulate a fix by creating a 'fixed.txt' file
+		// In a real scenario, this might be 'docker restart' or 'systemctl reload'
+		cmd := exec.Command("touch", "remediation_was_here.txt")
+		err := cmd.Run()
+		
+		if err != nil {
+			return fmt.Errorf("failed to execute remediation command: %w", err)
+		}
+		
+		fmt.Printf("[Remediator] [%s] Executed: touch remediation_was_here.txt\n", svc.Name)
 		return nil
 
 	default:
