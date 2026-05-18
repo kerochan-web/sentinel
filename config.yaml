@@ -14,7 +14,7 @@ services:
     target: "nginx"
     check_interval: 30s
     maintenance: true
-    maintenance_until: "2026-05-16T14:00:00Z"
+    maintenance_until: "2026-07-16T14:00:00Z"
   
   - name: "inventory-api"
     type: "http"
