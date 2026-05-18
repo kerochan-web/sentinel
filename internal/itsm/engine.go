@@ -19,11 +19,14 @@ type incidentTracker struct {
 type Engine struct {
 	// activeIncidents now maps Service Name -> Tracker instead of just the Model
 	activeIncidents map[string]*incidentTracker
+	settings        config.Remediation
 }
 
-func NewEngine() *Engine {
+// Update the constructor to accept the config
+func NewEngine(settings config.Remediation) *Engine {
 	return &Engine{
 		activeIncidents: make(map[string]*incidentTracker),
+		settings:        settings,
 	}
 }
 
@@ -38,7 +41,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			return
 		}
 
-		// 2. Ticket Creation
+		// 2. Incident Creation
 		if !exists {
 			newInc := &models.Incident{
 				SysID:            fmt.Sprintf("mock-sys-%d", time.Now().Unix()),
@@ -56,21 +59,20 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
 		}
 
-		// 3. Guardrail Check (Retries & Cooldown)
-		// For now, we'll use a hardcoded 1-minute cooldown for testing 
-		// until we pass the full config.Remediation object into the Engine.
-		
-		canRetry := tracker.attempts < 3 
-		cooldownOver := time.Since(tracker.lastAttemptAt) > 1 * time.Minute
+		// 3. Guardrail Check (Now using real config values)
+		canRetry := tracker.attempts < e.settings.MaxRetries 
+		cooldownOver := time.Since(tracker.lastAttemptAt) >= e.settings.CooldownPeriod
 
 		if canRetry && (tracker.attempts == 0 || cooldownOver) {
 			tracker.attempts++
 			tracker.lastAttemptAt = time.Now()
 			
-			fmt.Printf("[Incident Engine] Attempting remediation #%d for %s...\n", tracker.attempts, svc.Name)
+			fmt.Printf("[Incident Engine] [%s] Attempting remediation #%d/%d...\n", 
+				svc.Name, tracker.attempts, e.settings.MaxRetries)
 			remediation.Perform(svc)
 		} else if !canRetry {
-			fmt.Printf("[Incident Engine] Max retries reached for %s. Awaiting manual intervention.\n", svc.Name)
+			fmt.Printf("[Incident Engine] [%s] Max retries (%d) reached. Manual intervention required.\n", 
+				svc.Name, e.settings.MaxRetries)
 		}
 	} else if isHealthy && exists {
 		// 4. Recovery

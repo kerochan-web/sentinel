@@ -4,8 +4,8 @@ servicenow:
   password: "securepassword123"
 
 remediation_defaults:
-  max_retries: 3
-  cooldown_period: 5m
+  max_retries: 2
+  cooldown_period: 30s
   circuit_breaker_threshold: 5
 
 services:
