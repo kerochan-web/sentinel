@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kerochan-web/sentinel/internal/audit"
 	"github.com/kerochan-web/sentinel/internal/config"
 	"github.com/kerochan-web/sentinel/internal/remediation"
 	"github.com/kerochan-web/sentinel/pkg/models"
@@ -38,6 +39,14 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 		// 1. Maintenance Check
 		if svc.Maintenance && time.Now().Before(svc.MaintenanceUntil) {
 			fmt.Printf("[Incident Engine] %s is DOWN (Maintenance Active). Skipping.\n", svc.Name)
+			
+			// Structured Audit Log for skipped remediation due to maintenance
+			_ = audit.Log(audit.AuditEntry{
+				Service: svc.Name,
+				Host:    svc.Target,
+				Action:  "maintenance_skip",
+				Result:  "ignored",
+			})
 			return
 		}
 
@@ -57,9 +66,18 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			}
 			e.activeIncidents[svc.Name] = tracker
 			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
+			
+			// Structured Audit Log for incident creation
+			_ = audit.Log(audit.AuditEntry{
+				Service: svc.Name,
+				Host:    svc.Target,
+				Action:  "create_incident",
+				Result:  "success",
+				Ticket:  newInc.Number,
+			})
 		}
 
-		// 3. Guardrail Check (Now using real config values)
+		// 3. Guardrail Check
 		canRetry := tracker.attempts < e.settings.MaxRetries 
 		cooldownOver := time.Since(tracker.lastAttemptAt) >= e.settings.CooldownPeriod
 
@@ -69,10 +87,37 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			
 			fmt.Printf("[Incident Engine] [%s] Attempting remediation #%d/%d...\n", 
 				svc.Name, tracker.attempts, e.settings.MaxRetries)
-			remediation.Perform(svc)
+			
+			// Run remediation
+			err := remediation.Perform(svc)
+			
+			// Determine results for the audit entry
+			resultStr := "success"
+			if err != nil {
+				resultStr = "failed"
+			}
+
+			// Structured Audit Log for the remediation attempt
+			_ = audit.Log(audit.AuditEntry{
+				Service: svc.Name,
+				Host:    svc.Target,
+				Action:  fmt.Sprintf("remediation_attempt_%d", tracker.attempts),
+				Result:  resultStr,
+				Ticket:  tracker.incident.Number,
+			})
+
 		} else if !canRetry {
 			fmt.Printf("[Incident Engine] [%s] Max retries (%d) reached. Manual intervention required.\n", 
 				svc.Name, e.settings.MaxRetries)
+
+			// Structured Audit Log for the circuit breaker/max retry limit hit
+			_ = audit.Log(audit.AuditEntry{
+				Service: svc.Name,
+				Host:    svc.Target,
+				Action:  "circuit_breaker_lockout",
+				Result:  "failed",
+				Ticket:  tracker.incident.Number,
+			})
 		}
 	} else if isHealthy && exists {
 		// 4. Recovery
@@ -85,6 +130,14 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 		inc.ResolvedAt = &now
 		inc.CloseNotes = "Service recovered automatically via monitor check."
 		
+		// Structured Audit Log for automatic service recovery
+		_ = audit.Log(audit.AuditEntry{
+			Service: svc.Name,
+			Host:    svc.Target,
+			Action:  "service_recovery",
+			Result:  "success",
+			Ticket:  inc.Number,
+		})
 		// Remove from active tracking so a new one can be created if it fails again later
 		delete(e.activeIncidents, svc.Name)
 	}
