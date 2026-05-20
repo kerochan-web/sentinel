@@ -14,6 +14,7 @@ type incidentTracker struct {
 	incident      *models.Incident
 	attempts      int
 	lastAttemptAt time.Time
+	isLockedOut   bool
 }
 
 // Engine tracks the status of incidents to prevent duplicates
@@ -24,7 +25,7 @@ type Engine struct {
 	itsmConfig      config.ServiceNowConfig // Added to hold target URLs and credentials
 }
 
-// Update the constructor to accept the full network settings
+// NewEngine initializes the engine with configuration parameters
 func NewEngine(settings config.Remediation, itsmConfig config.ServiceNowConfig) *Engine {
 	return &Engine{
 		activeIncidents: make(map[string]*incidentTracker),
@@ -84,6 +85,12 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			})
 		}
 
+		// Drop out immediately if the breaker tripped
+		if tracker.isLockedOut {
+			fmt.Printf("[Incident Engine] [%s] Service is in a failed state; awaiting manual reset.\n", svc.Name)
+			return
+		}
+
 		// 3. Guardrail Check
 		canRetry := tracker.attempts < e.settings.MaxRetries 
 		cooldownOver := time.Since(tracker.lastAttemptAt) >= e.settings.CooldownPeriod
@@ -113,18 +120,19 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 				Ticket:  tracker.incident.Number,
 			})
 
-		} else if !canRetry {
-			fmt.Printf("[Incident Engine] [%s] Max retries (%d) reached. Manual intervention required.\n", 
-				svc.Name, e.settings.MaxRetries)
+			// Check if this attempt hit the limit threshold
+			if tracker.attempts >= e.settings.MaxRetries {
+				tracker.isLockedOut = true
+				fmt.Printf("[Incident Engine] [%s] Circuit breaker opened! Locking down future actions.\n", svc.Name)
 
-			// Structured Audit Log for the circuit breaker/max retry limit hit
-			_ = audit.Log(audit.AuditEntry{
-				Service: svc.Name,
-				Host:    svc.Target,
-				Action:  "circuit_breaker_lockout",
-				Result:  "failed",
-				Ticket:  tracker.incident.Number,
-			})
+				_ = audit.Log(audit.AuditEntry{
+					Service: svc.Name,
+					Host:    svc.Target,
+					Action:  "circuit_breaker_lockout",
+					Result:  "failed",
+					Ticket:  tracker.incident.Number,
+				})
+			}
 		}
 	} else if isHealthy && exists {
 		// 4. Recovery
