@@ -23,7 +23,7 @@ func main() {
 	fmt.Printf("ServiceNow Target: %s\n", cfg.ServiceNow.InstanceURL)
 
     // 2. Initialize the Incident Engine with settings from config.yaml
-	engine := itsm.NewEngine(cfg.Remediation)
+	engine := itsm.NewEngine(cfg.Remediation, cfg.ServiceNow)
 
 	fmt.Printf("Monitoring %d services...\n", len(cfg.Services))
 

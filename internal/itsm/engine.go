@@ -21,13 +21,15 @@ type Engine struct {
 	// activeIncidents now maps Service Name -> Tracker instead of just the Model
 	activeIncidents map[string]*incidentTracker
 	settings        config.Remediation
+	itsmConfig      config.ServiceNowConfig // Added to hold target URLs and credentials
 }
 
-// Update the constructor to accept the config
-func NewEngine(settings config.Remediation) *Engine {
+// Update the constructor to accept the full network settings
+func NewEngine(settings config.Remediation, itsmConfig config.ServiceNowConfig) *Engine {
 	return &Engine{
 		activeIncidents: make(map[string]*incidentTracker),
 		settings:        settings,
+		itsmConfig:      itsmConfig,
 	}
 }
 
@@ -66,6 +68,11 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			}
 			e.activeIncidents[svc.Name] = tracker
 			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
+			
+			// NEW: Fire payload over the wire to our client implementation
+			if err := SendIncident(e.itsmConfig.InstanceURL, newInc); err != nil {
+				fmt.Printf("[Incident Engine] API Client Error: %v\n", err)
+			}
 			
 			// Structured Audit Log for incident creation
 			_ = audit.Log(audit.AuditEntry{

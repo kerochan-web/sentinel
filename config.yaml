@@ -1,5 +1,5 @@
 servicenow:
-  instance_url: "https://dev-mock.service-now.com"
+  instance_url: "http://localhost:8081"
   username: "sentinel_svc"
   password: "securepassword123"
 
