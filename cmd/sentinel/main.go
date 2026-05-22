@@ -3,11 +3,13 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/kerochan-web/sentinel/internal/config"
     "github.com/kerochan-web/sentinel/internal/itsm"
 	"github.com/kerochan-web/sentinel/internal/monitor"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -24,6 +26,15 @@ func main() {
 
     // 2. Initialize the Incident Engine with settings from config.yaml
 	engine := itsm.NewEngine(cfg.Remediation, cfg.ServiceNow)
+
+	// NEW: Spin up background Prometheus scrapper server
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Printf("[Metrics] Serving endpoint at http://localhost:2112/metrics\n")
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			log.Fatalf("Metrics server encountered an error: %v", err)
+		}
+	}()
 
 	fmt.Printf("Monitoring %d services...\n", len(cfg.Services))
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/kerochan-web/sentinel/internal/audit"
 	"github.com/kerochan-web/sentinel/internal/config"
+	"github.com/kerochan-web/sentinel/internal/metrics"
 	"github.com/kerochan-web/sentinel/internal/remediation"
 	"github.com/kerochan-web/sentinel/pkg/models"
 )
@@ -97,6 +98,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 
 		if canRetry && (tracker.attempts == 0 || cooldownOver) {
 			tracker.attempts++
+			metrics.RemediationAttemptsTotal.Inc()
 			tracker.lastAttemptAt = time.Now()
 			
 			fmt.Printf("[Incident Engine] [%s] Attempting remediation #%d/%d...\n", 
@@ -123,6 +125,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			// Check if this attempt hit the limit threshold
 			if tracker.attempts >= e.settings.MaxRetries {
 				tracker.isLockedOut = true
+				metrics.ActiveLockouts.Inc() // NEW: Circuit breaker tripped
 				fmt.Printf("[Incident Engine] [%s] Circuit breaker opened! Locking down future actions.\n", svc.Name)
 
 				_ = audit.Log(audit.AuditEntry{
