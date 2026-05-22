@@ -8,6 +8,9 @@ remediation_defaults:
   cooldown_period: 30s
   circuit_breaker_threshold: 5
 
+notifications:
+  ntfy_topic: "sentinel-alerts-kerochan"
+
 services:
   - name: "nginx-frontend"
     type: "systemd"

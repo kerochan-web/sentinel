@@ -7,6 +7,7 @@ import (
 	"github.com/kerochan-web/sentinel/internal/audit"
 	"github.com/kerochan-web/sentinel/internal/config"
 	"github.com/kerochan-web/sentinel/internal/metrics"
+	"github.com/kerochan-web/sentinel/internal/notifier"
 	"github.com/kerochan-web/sentinel/internal/remediation"
 	"github.com/kerochan-web/sentinel/pkg/models"
 )
@@ -24,14 +25,16 @@ type Engine struct {
 	activeIncidents map[string]*incidentTracker
 	settings        config.Remediation
 	itsmConfig      config.ServiceNowConfig // Added to hold target URLs and credentials
+	notifyConfig    config.NotificationsConfig
 }
 
 // NewEngine initializes the engine with configuration parameters
-func NewEngine(settings config.Remediation, itsmConfig config.ServiceNowConfig) *Engine {
+func NewEngine(settings config.Remediation, itsmConfig config.ServiceNowConfig, notifyConfig config.NotificationsConfig) *Engine {
 	return &Engine{
 		activeIncidents: make(map[string]*incidentTracker),
 		settings:        settings,
 		itsmConfig:      itsmConfig,
+		notifyConfig:    notifyConfig,
 	}
 }
 
@@ -71,9 +74,15 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			e.activeIncidents[svc.Name] = tracker
 			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
 			
-			// NEW: Fire payload over the wire to our client implementation
+			// Fire payload over the wire to our client implementation
 			if err := SendIncident(e.itsmConfig.InstanceURL, newInc); err != nil {
 				fmt.Printf("[Incident Engine] API Client Error: %v\n", err)
+			}
+
+			// Notify engineer that an incident was opened
+			alertMsg := fmt.Sprintf("[sentinel] ALERT: Incident %s opened for %s", newInc.Number, svc.Name)
+			if err := notifier.SendAlert(e.notifyConfig.NtfyTopic, alertMsg); err != nil {
+				fmt.Printf("[Incident Engine] Notifier Error: %v\n", err)
 			}
 			
 			// Structured Audit Log for incident creation
@@ -125,8 +134,14 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			// Check if this attempt hit the limit threshold
 			if tracker.attempts >= e.settings.MaxRetries {
 				tracker.isLockedOut = true
-				metrics.ActiveLockouts.Inc() // NEW: Circuit breaker tripped
+				metrics.ActiveLockouts.Inc() // Circuit breaker tripped
 				fmt.Printf("[Incident Engine] [%s] Circuit breaker opened! Locking down future actions.\n", svc.Name)
+
+				// Notify engineer that the circuit breaker has tripped!
+breakerMsg := fmt.Sprintf("[sentinel] CIRCUIT BREAKER ACTUATED: %s is locked down", svc.Name)
+				if err := notifier.SendAlert(e.notifyConfig.NtfyTopic, breakerMsg); err != nil {
+					fmt.Printf("[Incident Engine] Notifier Error (Breaker): %v\n", err)
+				}
 
 				_ = audit.Log(audit.AuditEntry{
 					Service: svc.Name,

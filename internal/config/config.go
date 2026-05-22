@@ -11,6 +11,7 @@ type Config struct {
 	ServiceNow  ServiceNowConfig `yaml:"servicenow"`
 	Services    []Service        `yaml:"services"`
 	Remediation Remediation      `yaml:"remediation_defaults"`
+	Notifications NotificationsConfig `yaml:"notifications"` // Added for alerts
 }
 
 // ServiceNowConfig handles connectivity to the mock ITSM
@@ -18,6 +19,11 @@ type ServiceNowConfig struct {
 	InstanceURL string `yaml:"instance_url"`
 	Username    string `yaml:"username"`
 	Password    string `yaml:"password"` // In prod, use env vars/secrets
+}
+
+// NotificationsConfig holds our alerting channels
+type NotificationsConfig struct {
+	NtfyTopic string `yaml:"ntfy_topic"`
 }
 
 // Service defines what we are monitoring

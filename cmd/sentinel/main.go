@@ -25,9 +25,9 @@ func main() {
 	fmt.Printf("ServiceNow Target: %s\n", cfg.ServiceNow.InstanceURL)
 
     // 2. Initialize the Incident Engine with settings from config.yaml
-	engine := itsm.NewEngine(cfg.Remediation, cfg.ServiceNow)
+	engine := itsm.NewEngine(cfg.Remediation, cfg.ServiceNow, cfg.Notifications)
 
-	// NEW: Spin up background Prometheus scrapper server
+	// Spin up background Prometheus scrapper server
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		log.Printf("[Metrics] Serving endpoint at http://localhost:2112/metrics\n")
