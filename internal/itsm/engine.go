@@ -21,17 +21,16 @@ type incidentTracker struct {
 
 // Engine tracks the status of incidents to prevent duplicates
 type Engine struct {
-	// activeIncidents now maps Service Name -> Tracker instead of just the Model
-	activeIncidents map[string]*incidentTracker
+	store           StateStore
 	settings        config.Remediation
 	itsmConfig      config.ServiceNowConfig // Added to hold target URLs and credentials
 	notifyConfig    config.NotificationsConfig
 }
 
 // NewEngine initializes the engine with configuration parameters
-func NewEngine(settings config.Remediation, itsmConfig config.ServiceNowConfig, notifyConfig config.NotificationsConfig) *Engine {
+func NewEngine(store StateStore, settings config.Remediation, itsmConfig config.ServiceNowConfig, notifyConfig config.NotificationsConfig) *Engine {
 	return &Engine{
-		activeIncidents: make(map[string]*incidentTracker),
+		store:           store,
 		settings:        settings,
 		itsmConfig:      itsmConfig,
 		notifyConfig:    notifyConfig,
@@ -40,7 +39,13 @@ func NewEngine(settings config.Remediation, itsmConfig config.ServiceNowConfig, 
 
 // ProcessCheck takes the result of a health check and manages the ServiceNow record
 func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
-	tracker, exists := e.activeIncidents[svc.Name]
+	// Fetch state from our store interface boundary
+	tracker, err := e.store.Get(svc.Name)
+	if err != nil {
+		fmt.Printf("[Incident Engine] Error fetching state for %s: %v\n", svc.Name, err)
+		return
+	}
+	exists := tracker != nil
 
 	if !isHealthy {
 		// 1. Maintenance Check
@@ -61,7 +66,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 		if !exists {
 			newInc := &models.Incident{
 				SysID:            fmt.Sprintf("mock-sys-%d", time.Now().Unix()),
-				Number:           fmt.Sprintf("INC%07d", 1000+len(e.activeIncidents)+1),
+				Number:           fmt.Sprintf("INC%07d", 1000+time.Now().UnixNano()%1000),
 				ShortDescription: fmt.Sprintf("CRITICAL: %s check failed for %s", svc.Type, svc.Name),
 				State:            models.StateNew,
 				Severity:         1,
@@ -71,7 +76,12 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			tracker = &incidentTracker{
 				incident: newInc,
 			}
-			e.activeIncidents[svc.Name] = tracker
+
+			// Save state immediately upon discovery
+			if err := e.store.Save(svc.Name, tracker); err != nil {
+				fmt.Printf("[Incident Engine] Store save error for %s: %v\n", svc.Name, err)
+			}
+
 			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
 			
 			// Fire payload over the wire to our client implementation
@@ -138,7 +148,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 				fmt.Printf("[Incident Engine] [%s] Circuit breaker opened! Locking down future actions.\n", svc.Name)
 
 				// Notify engineer that the circuit breaker has tripped!
-breakerMsg := fmt.Sprintf("[sentinel] CIRCUIT BREAKER ACTUATED: %s is locked down", svc.Name)
+				breakerMsg := fmt.Sprintf("[sentinel] CIRCUIT BREAKER ACTUATED: %s is locked down", svc.Name)
 				if err := notifier.SendAlert(e.notifyConfig.NtfyTopic, breakerMsg); err != nil {
 					fmt.Printf("[Incident Engine] Notifier Error (Breaker): %v\n", err)
 				}
@@ -150,6 +160,11 @@ breakerMsg := fmt.Sprintf("[sentinel] CIRCUIT BREAKER ACTUATED: %s is locked dow
 					Result:  "failed",
 					Ticket:  tracker.incident.Number,
 				})
+			}
+
+			// Persist mutations (updated attempts, cooldown timestamp, lockout status)
+			if err := e.store.Save(svc.Name, tracker); err != nil {
+				fmt.Printf("[Incident Engine] Store modification save error for %s: %v\n", svc.Name, err)
 			}
 		}
 	} else if isHealthy && exists {
@@ -171,7 +186,10 @@ breakerMsg := fmt.Sprintf("[sentinel] CIRCUIT BREAKER ACTUATED: %s is locked dow
 			Result:  "success",
 			Ticket:  inc.Number,
 		})
-		// Remove from active tracking so a new one can be created if it fails again later
-		delete(e.activeIncidents, svc.Name)
+		
+		// Core Change: Clear out tracking row upon clean recovery
+		if err := e.store.Delete(svc.Name); err != nil {
+			fmt.Printf("[Incident Engine] Store tracking deletion error for %s: %v\n", svc.Name, err)
+		}
 	}
 }

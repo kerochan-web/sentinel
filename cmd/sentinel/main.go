@@ -24,8 +24,14 @@ func main() {
 	fmt.Printf("Successfully loaded configuration for %d services.\n", len(cfg.Services))
 	fmt.Printf("ServiceNow Target: %s\n", cfg.ServiceNow.InstanceURL)
 
-    // 2. Initialize the Incident Engine with settings from config.yaml
-	engine := itsm.NewEngine(cfg.Remediation, cfg.ServiceNow, cfg.Notifications)
+    // 2. Initialize the Persistent SQL State Store
+	stateStore, err := itsm.NewSqlStore("sentinel.db")
+	if err != nil {
+		log.Fatalf("Failed to initialize persistent state store: %v", err)
+	}
+	defer stateStore.Close()
+
+	engine := itsm.NewEngine(stateStore, cfg.Remediation, cfg.ServiceNow, cfg.Notifications)
 
 	// Spin up background Prometheus scrapper server
 	go func() {
