@@ -34,6 +34,7 @@ type Service struct {
 	CheckInterval time.Duration `yaml:"check_interval"`
 	Maintenance      bool          `yaml:"maintenance"`
 	MaintenanceUntil time.Time     `yaml:"maintenance_until"`
+	RemediationCommand string      `yaml:"remediation_command"`
 }
 
 // Remediation defines the safety guardrails

@@ -18,9 +18,11 @@ services:
     check_interval: 30s
     maintenance: true
     maintenance_until: "2026-07-16T14:00:00Z"
-  
+    remediation_command: "echo 'Restarting service' && touch /tmp/sentinel_restarted_$SERVICE_NAME"
+
   - name: "inventory-api"
     type: "http"
     target: "http://localhost:8080/health"
     check_interval: 15s
     maintenance: false
+    remediation_command: "echo 'Restarting service' && touch /tmp/sentinel_restarted_$SERVICE_NAME"

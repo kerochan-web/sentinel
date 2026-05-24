@@ -1,37 +1,55 @@
 package remediation
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
-	// "runtime"
+	"strings"
+	"time"
 
 	"github.com/kerochan-web/sentinel/internal/config"
 )
 
-// Perform attempts to fix the service based on its type.
+// Perform attempts to fix the service using a dynamic, decoupled shell command.
 func Perform(svc config.Service) error {
-	fmt.Printf("[Remediator] Attempting remediation for %s (Type: %s)...\n", svc.Name, svc.Type)
-
-	switch svc.Type {
-	case "systemd":
-		// In a real Linux env, this would be: exec.Command("systemctl", "restart", svc.Target).Run()
-		fmt.Printf("[Remediator] SIMULATION: systemctl restart %s\n", svc.Target)
-		return nil
-
-	case "http":
-		// We'll simulate a fix by creating a 'fixed.txt' file
-		// In a real scenario, this might be 'docker restart' or 'systemctl reload'
-		cmd := exec.Command("touch", "remediation_was_here.txt")
-		err := cmd.Run()
-		
-		if err != nil {
-			return fmt.Errorf("failed to execute remediation command: %w", err)
-		}
-		
-		fmt.Printf("[Remediator] [%s] Executed: touch remediation_was_here.txt\n", svc.Name)
-		return nil
-
-	default:
-		return fmt.Errorf("no remediation path for type: %s", svc.Type)
+	if svc.RemediationCommand == "" {
+		return fmt.Errorf("no remediation command configured for service: %s", svc.Name)
 	}
+
+	// Context Token Injection
+	// Intercept the command template and swap out our dynamic tokens
+	cmdStr := svc.RemediationCommand
+	cmdStr = strings.ReplaceAll(cmdStr, "$SERVICE_NAME", svc.Name)
+	cmdStr = strings.ReplaceAll(cmdStr, "$SERVICE_TARGET", svc.Target)
+
+	fmt.Printf("[Remediator] Executing dynamic command for %s: %s\n", svc.Name, cmdStr)
+
+	// Safe Exec Runner with a hard 5-second timeout boundary
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Execute through an explicit shell runner wrapper
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdStr)
+
+	// Trap both stdout and stderr pipes to surface execution details or failures cleanly
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		// Differentiate between an execution error and a strict timeout threshold breach
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("remediation command timed out after 5s: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		}
+		return fmt.Errorf("remediation command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+
+	// Log standard out for traceability if the script echoed anything
+	if stdout.Len() > 0 {
+		fmt.Printf("[Remediator] [%s] stdout: %s\n", svc.Name, strings.TrimSpace(stdout.String()))
+	}
+
+	return nil
 }
