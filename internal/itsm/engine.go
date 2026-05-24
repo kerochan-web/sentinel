@@ -1,6 +1,7 @@
 package itsm
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -125,6 +126,33 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			
 			// Run remediation
 			err := remediation.Perform(svc)
+			
+			// Check if a critical compliance check failed
+			if err != nil && errors.Is(err, remediation.ErrSafetyViolation) {
+				tracker.isLockedOut = true
+				metrics.ActiveLockouts.Inc() // Trip the metric lockout counter
+				fmt.Printf("[Incident Engine] [%s] SAFETY VIOLATION BREACHED: Actuating circuit breaker immediately.\n", svc.Name)
+
+				breakerMsg := fmt.Sprintf("[sentinel] SAFETY VIOLATION BREACHED: %s execution aborted and forced into lockdown", svc.Name)
+				if nfyErr := notifier.SendAlert(e.notifyConfig.NtfyTopic, breakerMsg); nfyErr != nil {
+					fmt.Printf("[Incident Engine] Notifier Error (Safety Breaker): %v\n", nfyErr)
+				}
+
+				// Append a final tracking status block to audit logs
+				_ = audit.Log(audit.AuditEntry{
+					Service: svc.Name,
+					Host:    svc.Target,
+					Action:  "circuit_breaker_lockout",
+					Result:  "failed",
+					Ticket:  tracker.incident.Number,
+				})
+
+				// Force save state changes down to persistent sqlite layer immediately
+				if saveErr := e.store.Save(svc.Name, tracker); saveErr != nil {
+					fmt.Printf("[Incident Engine] Store safety lockout save error for %s: %v\n", svc.Name, saveErr)
+				}
+				return // Abort process execution path entirely
+			}
 			
 			// Determine results for the audit entry
 			resultStr := "success"

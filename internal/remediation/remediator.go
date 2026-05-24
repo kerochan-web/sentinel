@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kerochan-web/sentinel/internal/audit"
 	"github.com/kerochan-web/sentinel/internal/config"
 )
 
@@ -22,6 +23,18 @@ func Perform(svc config.Service) error {
 	cmdStr := svc.RemediationCommand
 	cmdStr = strings.ReplaceAll(cmdStr, "$SERVICE_NAME", svc.Name)
 	cmdStr = strings.ReplaceAll(cmdStr, "$SERVICE_TARGET", svc.Target)
+
+	// Run compliance check before initializing the runner context
+	if err := ValidateCommand(cmdStr); err != nil {
+		// Immediately write out the CRITICAL_SAFETY_VIOLATION block to the audit log
+		_ = audit.Log(audit.AuditEntry{
+			Service: svc.Name,
+			Host:    svc.Target,
+			Action:  "CRITICAL_SAFETY_VIOLATION",
+			Result:  "aborted",
+		})
+		return err
+	}
 
 	fmt.Printf("[Remediator] Executing dynamic command for %s: %s\n", svc.Name, cmdStr)
 
