@@ -1,13 +1,14 @@
 package itsm
 
 import (
-	"errors"
+	"errors" // Added for validation checks
 	"fmt"
 	"time"
 
 	"github.com/kerochan-web/sentinel/internal/audit"
 	"github.com/kerochan-web/sentinel/internal/config"
 	"github.com/kerochan-web/sentinel/internal/metrics"
+	"github.com/kerochan-web/sentinel/internal/monitor" // Added for closed-loop validation recheck
 	"github.com/kerochan-web/sentinel/internal/notifier"
 	"github.com/kerochan-web/sentinel/internal/remediation"
 	"github.com/kerochan-web/sentinel/pkg/models"
@@ -24,7 +25,7 @@ type incidentTracker struct {
 type Engine struct {
 	store           StateStore
 	settings        config.Remediation
-	itsmConfig      config.ServiceNowConfig // Added to hold target URLs and credentials
+	itsmConfig      config.ServiceNowConfig 
 	notifyConfig    config.NotificationsConfig
 }
 
@@ -40,7 +41,6 @@ func NewEngine(store StateStore, settings config.Remediation, itsmConfig config.
 
 // ProcessCheck takes the result of a health check and manages the ServiceNow record
 func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
-	// Fetch state from our store interface boundary
 	tracker, err := e.store.Get(svc.Name)
 	if err != nil {
 		fmt.Printf("[Incident Engine] Error fetching state for %s: %v\n", svc.Name, err)
@@ -53,7 +53,6 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 		if svc.Maintenance && time.Now().Before(svc.MaintenanceUntil) {
 			fmt.Printf("[Incident Engine] %s is DOWN (Maintenance Active). Skipping.\n", svc.Name)
 			
-			// Structured Audit Log for skipped remediation due to maintenance
 			_ = audit.Log(audit.AuditEntry{
 				Service: svc.Name,
 				Host:    svc.Target,
@@ -78,25 +77,21 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 				incident: newInc,
 			}
 
-			// Save state immediately upon discovery
 			if err := e.store.Save(svc.Name, tracker); err != nil {
 				fmt.Printf("[Incident Engine] Store save error for %s: %v\n", svc.Name, err)
 			}
 
 			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
 			
-			// Fire payload over the wire to our client implementation
 			if err := SendIncident(e.itsmConfig.InstanceURL, newInc); err != nil {
 				fmt.Printf("[Incident Engine] API Client Error: %v\n", err)
 			}
 
-			// Notify engineer that an incident was opened
 			alertMsg := fmt.Sprintf("[sentinel] ALERT: Incident %s opened for %s", newInc.Number, svc.Name)
 			if err := notifier.SendAlert(e.notifyConfig.NtfyTopic, alertMsg); err != nil {
 				fmt.Printf("[Incident Engine] Notifier Error: %v\n", err)
 			}
 			
-			// Structured Audit Log for incident creation
 			_ = audit.Log(audit.AuditEntry{
 				Service: svc.Name,
 				Host:    svc.Target,
@@ -124,58 +119,103 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			fmt.Printf("[Incident Engine] [%s] Attempting remediation #%d/%d...\n", 
 				svc.Name, tracker.attempts, e.settings.MaxRetries)
 			
-			// Run remediation
+			// Dispatch remediation command execution
 			err := remediation.Perform(svc)
 			
-			// Check if a critical compliance check failed
-			if err != nil && errors.Is(err, remediation.ErrSafetyViolation) {
-				tracker.isLockedOut = true
-				metrics.ActiveLockouts.Inc() // Trip the metric lockout counter
-				fmt.Printf("[Incident Engine] [%s] SAFETY VIOLATION BREACHED: Actuating circuit breaker immediately.\n", svc.Name)
-
-				breakerMsg := fmt.Sprintf("[sentinel] SAFETY VIOLATION BREACHED: %s execution aborted and forced into lockdown", svc.Name)
-				if nfyErr := notifier.SendAlert(e.notifyConfig.NtfyTopic, breakerMsg); nfyErr != nil {
-					fmt.Printf("[Incident Engine] Notifier Error (Safety Breaker): %v\n", nfyErr)
+			if err != nil {
+				// Handle compliance breaches first without changing execution flows
+				if errors.Is(err, remediation.ErrSafetyViolation) {
+					tracker.isLockedOut = true
+					metrics.ActiveLockouts.Inc()
+					fmt.Printf("[Incident Engine] [%s] SAFETY VIOLATION BREACHED: Actuating circuit breaker immediately.\n", svc.Name)
+					
+					breakerMsg := fmt.Sprintf("[sentinel] SAFETY VIOLATION BREACHED: %s execution aborted and forced into lockdown", svc.Name)
+					if nfyErr := notifier.SendAlert(e.notifyConfig.NtfyTopic, breakerMsg); nfyErr != nil {
+						fmt.Printf("[Incident Engine] Notifier Error (Safety Breaker): %v\n", nfyErr)
+					}
+					
+					_ = audit.Log(audit.AuditEntry{
+						Service: svc.Name,
+						Host:    svc.Target,
+						Action:  "circuit_breaker_lockout",
+						Result:  "failed",
+						Ticket:  tracker.incident.Number,
+					})
+					if saveErr := e.store.Save(svc.Name, tracker); saveErr != nil {
+						fmt.Printf("[Incident Engine] Store safety lockout save error for %s: %v\n", svc.Name, saveErr)
+					}
+					return
 				}
 
-				// Append a final tracking status block to audit logs
+				// Log traditional non-zero script exit bounds
+				fmt.Printf("[Incident Engine] [%s] Remediation script execution failed: %v\n", svc.Name, err)
 				_ = audit.Log(audit.AuditEntry{
 					Service: svc.Name,
 					Host:    svc.Target,
-					Action:  "circuit_breaker_lockout",
+					Action:  fmt.Sprintf("remediation_attempt_%d", tracker.attempts),
 					Result:  "failed",
 					Ticket:  tracker.incident.Number,
 				})
+			} else {
+				// Tiny Step 1: Sleep for a 2-second stabilization window
+				fmt.Printf("[Incident Engine] [%s] Remediation script returned exit code 0. Waiting 2s for system stabilization...\n", svc.Name)
+				time.Sleep(2 * time.Second)
 
-				// Force save state changes down to persistent sqlite layer immediately
-				if saveErr := e.store.Save(svc.Name, tracker); saveErr != nil {
-					fmt.Printf("[Incident Engine] Store safety lockout save error for %s: %v\n", svc.Name, saveErr)
+				// Tiny Step 2: Health Recheck inline inside the active failure check loop
+				fmt.Printf("[Incident Engine] [%s] Triggering post-remediation closed-loop verification...\n", svc.Name)
+				isNowHealthy := monitor.Check(svc)
+
+				// Tiny Step 3: Conditional State Updating
+				if isNowHealthy {
+					fmt.Printf("[Incident Engine] [%s] Closed-loop verification PASSED. Service recovered.\n", svc.Name)
+					
+					_ = audit.Log(audit.AuditEntry{
+						Service: svc.Name,
+						Host:    svc.Target,
+						Action:  fmt.Sprintf("remediation_attempt_%d_verification", tracker.attempts),
+						Result:  "success",
+						Ticket:  tracker.incident.Number,
+					})
+
+					// Execute ticket closure process right here
+					inc := tracker.incident
+					fmt.Printf("[Incident Engine] <<< RECOVERY: Resolving Ticket %s for %s\n", inc.Number, svc.Name)
+					inc.State = models.StateResolved
+					now := time.Now()
+					inc.ResolvedAt = &now
+					inc.CloseNotes = "Service recovered automatically via post-remediation closed-loop verification."
+					
+					_ = audit.Log(audit.AuditEntry{
+						Service: svc.Name,
+						Host:    svc.Target,
+						Action:  "service_recovery_verified",
+						Result:  "success",
+						Ticket:  inc.Number,
+					})
+					
+					if delErr := e.store.Delete(svc.Name); delErr != nil {
+						fmt.Printf("[Incident Engine] Store tracking deletion error for %s: %v\n", svc.Name, delErr)
+					}
+					return // Gracefully drop out since health is restored
+				} else {
+					// Count it as a complete remediation failure event and let the loops handle the cooldown period
+					fmt.Printf("[Incident Engine] [%s] Closed-loop verification FAILED. App remains unreachable.\n", svc.Name)
+					_ = audit.Log(audit.AuditEntry{
+						Service: svc.Name,
+						Host:    svc.Target,
+						Action:  fmt.Sprintf("remediation_attempt_%d_verification", tracker.attempts),
+						Result:  "failed",
+						Ticket:  tracker.incident.Number,
+					})
 				}
-				return // Abort process execution path entirely
 			}
-			
-			// Determine results for the audit entry
-			resultStr := "success"
-			if err != nil {
-				resultStr = "failed"
-			}
-
-			// Structured Audit Log for the remediation attempt
-			_ = audit.Log(audit.AuditEntry{
-				Service: svc.Name,
-				Host:    svc.Target,
-				Action:  fmt.Sprintf("remediation_attempt_%d", tracker.attempts),
-				Result:  resultStr,
-				Ticket:  tracker.incident.Number,
-			})
 
 			// Check if this attempt hit the limit threshold
 			if tracker.attempts >= e.settings.MaxRetries {
 				tracker.isLockedOut = true
-				metrics.ActiveLockouts.Inc() // Circuit breaker tripped
+				metrics.ActiveLockouts.Inc() 
 				fmt.Printf("[Incident Engine] [%s] Circuit breaker opened! Locking down future actions.\n", svc.Name)
 
-				// Notify engineer that the circuit breaker has tripped!
 				breakerMsg := fmt.Sprintf("[sentinel] CIRCUIT BREAKER ACTUATED: %s is locked down", svc.Name)
 				if err := notifier.SendAlert(e.notifyConfig.NtfyTopic, breakerMsg); err != nil {
 					fmt.Printf("[Incident Engine] Notifier Error (Breaker): %v\n", err)
@@ -196,7 +236,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			}
 		}
 	} else if isHealthy && exists {
-		// 4. Recovery
+		// 4. Recovery (For standard external/asynchronous remediation cases)
 		inc := tracker.incident
 
 		fmt.Printf("[Incident Engine] <<< RECOVERY: Resolving Ticket %s for %s\n", inc.Number, svc.Name)
@@ -206,7 +246,6 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 		inc.ResolvedAt = &now
 		inc.CloseNotes = "Service recovered automatically via monitor check."
 		
-		// Structured Audit Log for automatic service recovery
 		_ = audit.Log(audit.AuditEntry{
 			Service: svc.Name,
 			Host:    svc.Target,
@@ -215,7 +254,6 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			Ticket:  inc.Number,
 		})
 		
-		// Core Change: Clear out tracking row upon clean recovery
 		if err := e.store.Delete(svc.Name); err != nil {
 			fmt.Printf("[Incident Engine] Store tracking deletion error for %s: %v\n", svc.Name, err)
 		}
