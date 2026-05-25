@@ -1,17 +1,23 @@
 package itsm
 
 import (
-	"errors" // Added for validation checks
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/kerochan-web/sentinel/internal/audit"
 	"github.com/kerochan-web/sentinel/internal/config"
 	"github.com/kerochan-web/sentinel/internal/metrics"
-	"github.com/kerochan-web/sentinel/internal/monitor" // Added for closed-loop validation recheck
+	"github.com/kerochan-web/sentinel/internal/monitor"
 	"github.com/kerochan-web/sentinel/internal/notifier"
 	"github.com/kerochan-web/sentinel/internal/remediation"
 	"github.com/kerochan-web/sentinel/pkg/models"
+
+	// OpenTelemetry packages
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type incidentTracker struct {
@@ -39,11 +45,27 @@ func NewEngine(store StateStore, settings config.Remediation, itsmConfig config.
 	}
 }
 
+// Global package tracer accessor
+var tracer = otel.Tracer("sentinel-engine")
+
 // ProcessCheck takes the result of a health check and manages the ServiceNow record
 func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
+	// Span Instrumenting setup
+	_, span := tracer.Start(context.Background(), "ProcessIncidentLifecycle") // Maybe change _ to ctx later?
+	defer span.End()
+
+	// Inject key runtime attributes directly into the active tracking span context
+	span.SetAttributes(
+		attribute.String("service.name", svc.Name),
+		attribute.String("service.type", svc.Type),
+		attribute.String("service.target", svc.Target),
+		attribute.Bool("service.is_healthy", isHealthy),
+	)
+
 	tracker, err := e.store.Get(svc.Name)
 	if err != nil {
 		fmt.Printf("[Incident Engine] Error fetching state for %s: %v\n", svc.Name, err)
+		span.RecordError(err)
 		return
 	}
 	exists := tracker != nil
@@ -52,6 +74,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 		// 1. Maintenance Check
 		if svc.Maintenance && time.Now().Before(svc.MaintenanceUntil) {
 			fmt.Printf("[Incident Engine] %s is DOWN (Maintenance Active). Skipping.\n", svc.Name)
+			span.AddEvent("maintenance_window_skip")
 			
 			_ = audit.Log(audit.AuditEntry{
 				Service: svc.Name,
@@ -82,9 +105,13 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			}
 
 			fmt.Printf("[Incident Engine] >>> ALERT: Creating ServiceNow Ticket %s for %s\n", newInc.Number, svc.Name)
+			span.AddEvent("incident_ticket_created", trace.WithAttributes(
+				attribute.String("incident.number", newInc.Number),
+			))
 			
 			if err := SendIncident(e.itsmConfig.InstanceURL, newInc); err != nil {
 				fmt.Printf("[Incident Engine] API Client Error: %v\n", err)
+				span.RecordError(err)
 			}
 
 			alertMsg := fmt.Sprintf("[sentinel] ALERT: Incident %s opened for %s", newInc.Number, svc.Name)
@@ -104,6 +131,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 		// Drop out immediately if the breaker tripped
 		if tracker.isLockedOut {
 			fmt.Printf("[Incident Engine] [%s] Service is in a failed state; awaiting manual reset.\n", svc.Name)
+			span.AddEvent("execution_aborted_lockout_active")
 			return
 		}
 
@@ -119,6 +147,10 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 			fmt.Printf("[Incident Engine] [%s] Attempting remediation #%d/%d...\n", 
 				svc.Name, tracker.attempts, e.settings.MaxRetries)
 			
+			span.AddEvent("remediation_triggered", trace.WithAttributes(
+				attribute.Int("remediation.attempt_number", tracker.attempts),
+			))
+			
 			// Dispatch remediation command execution
 			err := remediation.Perform(svc)
 			
@@ -128,6 +160,8 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 					tracker.isLockedOut = true
 					metrics.ActiveLockouts.Inc()
 					fmt.Printf("[Incident Engine] [%s] SAFETY VIOLATION BREACHED: Actuating circuit breaker immediately.\n", svc.Name)
+					
+					span.AddEvent("critical_safety_violation_tripped")
 					
 					breakerMsg := fmt.Sprintf("[sentinel] SAFETY VIOLATION BREACHED: %s execution aborted and forced into lockdown", svc.Name)
 					if nfyErr := notifier.SendAlert(e.notifyConfig.NtfyTopic, breakerMsg); nfyErr != nil {
@@ -149,6 +183,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 
 				// Log traditional non-zero script exit bounds
 				fmt.Printf("[Incident Engine] [%s] Remediation script execution failed: %v\n", svc.Name, err)
+				span.RecordError(err)
 				_ = audit.Log(audit.AuditEntry{
 					Service: svc.Name,
 					Host:    svc.Target,
@@ -157,17 +192,18 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 					Ticket:  tracker.incident.Number,
 				})
 			} else {
-				// Tiny Step 1: Sleep for a 2-second stabilization window
+				// Sleep for a 2-second stabilization window
 				fmt.Printf("[Incident Engine] [%s] Remediation script returned exit code 0. Waiting 2s for system stabilization...\n", svc.Name)
 				time.Sleep(2 * time.Second)
 
-				// Tiny Step 2: Health Recheck inline inside the active failure check loop
+				// Health Recheck inline inside the active failure check loop
 				fmt.Printf("[Incident Engine] [%s] Triggering post-remediation closed-loop verification...\n", svc.Name)
 				isNowHealthy := monitor.Check(svc)
 
-				// Tiny Step 3: Conditional State Updating
+				// Conditional State Updating
 				if isNowHealthy {
 					fmt.Printf("[Incident Engine] [%s] Closed-loop verification PASSED. Service recovered.\n", svc.Name)
+					span.AddEvent("remediation_verification_passed")
 					
 					_ = audit.Log(audit.AuditEntry{
 						Service: svc.Name,
@@ -200,6 +236,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 				} else {
 					// Count it as a complete remediation failure event and let the loops handle the cooldown period
 					fmt.Printf("[Incident Engine] [%s] Closed-loop verification FAILED. App remains unreachable.\n", svc.Name)
+					span.AddEvent("remediation_verification_failed")
 					_ = audit.Log(audit.AuditEntry{
 						Service: svc.Name,
 						Host:    svc.Target,
@@ -215,6 +252,8 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 				tracker.isLockedOut = true
 				metrics.ActiveLockouts.Inc() 
 				fmt.Printf("[Incident Engine] [%s] Circuit breaker opened! Locking down future actions.\n", svc.Name)
+
+				span.AddEvent("circuit_breaker_tripped")
 
 				breakerMsg := fmt.Sprintf("[sentinel] CIRCUIT BREAKER ACTUATED: %s is locked down", svc.Name)
 				if err := notifier.SendAlert(e.notifyConfig.NtfyTopic, breakerMsg); err != nil {
@@ -240,6 +279,7 @@ func (e *Engine) ProcessCheck(svc config.Service, isHealthy bool) {
 		inc := tracker.incident
 
 		fmt.Printf("[Incident Engine] <<< RECOVERY: Resolving Ticket %s for %s\n", inc.Number, svc.Name)
+		span.AddEvent("async_service_recovery_detected")
 
 		inc.State = models.StateResolved
 		now := time.Now()
