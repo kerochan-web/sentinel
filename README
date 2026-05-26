@@ -1,0 +1,133 @@
+sentinel
+========
+A self-hosted, production-aware operational automation platform designed to simulate real-world incident management and automated remediation workflows commonly found in enterprise SRE environments.
+
+Unlike naive cron jobs or shell scripts that blindly blast restart commands, sentinel operates as a strict closed-loop controller. It integrates health tracking, automated system remediation, static safety boundaries, state persistence, and enterprise ticketing (ServiceNow) to model safe, observable operational behavior.
+
+Core Features and Architectural Primitives
+------------------------------------------
+
+* Deterministic Circuit Breaking (Lockout Engine): Tracks remediation counts permanently across application Restarts using an embedded SQLite state engine. If a service continues failing beyond its maximum configured retries, the circuit breaker opens (isLockedOut = true), halting all scripts to prevent infinite restart loops until a manual operator reset is signaled.
+* Blast Radius Protection (Safety Boundaries): Implements a lexical parser that evaluates user-configured shell strings prior to execution. If dangerous commands (e.g., rm -rf, mkfs, dd) or unparameterized targets are injected by config typo, execution is aborted, a critical safety violation is logged, and the circuit breaker trips instantly.
+* Closed-Loop Post-Remediation Verification: After launching a remediation command, the execution block enforces a stabilization pause followed immediately by an inline health re-check. A service recovery is only logged as a success if the endpoint actually returns a healthy status code.
+* Simulated Enterprise Lifecycle (ServiceNow API): Integrates over-the-wire with a local mock Table API endpoint using standard ServiceNow schemas. It creates records upon discovery, processes transitions, and posts close notes when the loop verifies resolution.
+* Instant Operator Alerting: Built-in lightweight hooks map directly to ntfy.sh pub/sub topics, pushing immediate desktop or phone push notifications to active on-call engineers when tickets are generated or when a service trips into full lockout status.
+* Observability Pillars: Exposes an independent /metrics scraping interface for Prometheus tracking active lockouts and exact retry execution numbers.
+* Instruments execution pathways with OpenTelemetry, piping structured trace snapshots directly to stdout to map the operational lifecycle from telemetry capture to shell exit context.
+
+Project Structure
+-----------------
+
+.
+├── cmd
+│   ├── mock-itsm        # Independent local ServiceNow Simulation API server
+│   │   └── main.go
+│   └── sentinel         # Core automation binary daemon
+│       └── main.go
+├── config.yaml          # Central infrastructure config (Monitors, Targets, Credentials)
+├── go.mod
+├── go.sum
+├── internal
+│   ├── audit            # Structured append-only JSON file logger
+│   │   └── audit.go
+│   ├── config           # YAML parsing schemas and duration abstractions
+│   │   └── config.go
+│   ├── itsm             # Incident life-cycle state controller & API client
+│   │   ├── client.go
+│   │   ├── engine.go
+│   │   ├── sql_store.go # SQLite schema migrations and persistence engine
+│   │   └── store.go
+│   ├── metrics          # Prometheus metrics instrumentation package
+│   │   └── metrics.go
+│   ├── monitor          # HTTP, TCP, and network probing handlers
+│   │   └── monitor.go
+│   ├── notifier         # ntfy.sh API integration layer
+│   │   └── notifier.go
+│   └── remediation      # Safe shell command processing and keyword enforcement
+│       ├── remediator.go
+│       └── safety.go
+└── pkg
+    └── models           # Structured schemas (ServiceNow JSON records)
+        └── itsm.go
+
+Configuration Example (config.yaml)
+-----------------------------------
+The system uses a declarative configuration defining both global constraints and specific target profiles:
+
+servicenow:
+  instance_url: "http://localhost:8081"
+  username: "sentinel_svc"
+  password: "securepassword123"
+
+remediation_defaults:
+  max_retries: 3
+  cooldown_period: 30s
+  circuit_breaker_threshold: 5
+
+notifications:
+  ntfy_topic: "sentinel-alerts-production-node"
+
+services:
+  - name: "nginx-frontend"
+    type: "systemd"
+    target: "nginx"
+    check_interval: 30s
+    maintenance: true
+    maintenance_until: "2026-07-16T14:00:00Z"
+  
+  - name: "inventory-api"
+    type: "http"
+    target: "http://localhost:8080/health"
+    check_interval: 15s
+    maintenance: false
+    remediation_command: "echo 'Restarting microservice...' && systemctl restart inventory-api"
+
+Verification Workflow
+---------------------
+To run the full end-to-end automated remediation verification locally, use three independent terminals to follow the lifecycle transitions:
+
+1. Boot up the Mock ITSM Server
+
+Spin up the local mock server to simulate the enterprise ticket system endpoint on port `8081`:
+
+go run cmd/mock-itsm/main.go
+
+2. Run the Monitored Application & Simulation Harness
+
+Run your backend app or simulation target on port `8080`. Toggle its state offline via your testing tool to inject failure:
+
+curl -X POST http://localhost:8080/toggle-chaos
+
+3. Initialize Sentinel
+
+Launch the core automation controller:
+
+go run cmd/sentinel/main.go
+
+Observe Lifecycle Phases in Real Time:
+--------------------------------------
+1. Detection: sentinel logs a tracking failure on inventory-api.
+2. ITSM Communication: A POST payload is dispatched to the Mock server. Terminal 1 logs an explicit incoming ticket creation request (INC0001001).
+3. Remediation and Validation: The token-replaced command triggers, a stabilization delay passes, and the closed-loop health verification evaluates the service state.
+4. Breaker Actuation: If the application remains down, the retry threshold increments inside SQLite. Once it hits max_retries, the console logs an opened circuit breaker event, fires an instant notification hook to your ntfy.sh stream, and effectively locks down future execution safely until human operator presence is detected.
+5. Observability Verification: Inspect live telemetry counters instantly via curl:
+
+curl http://localhost:2112/metrics
+
+License Notice
+--------------
+sentinel - lightweight operational tooling platform
+Copyright (C) 2026  Kerochan <contact@kerochan.lol>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/Licenses/>.
