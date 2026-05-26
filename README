@@ -6,7 +6,6 @@ Unlike naive cron jobs or shell scripts that blindly blast restart commands, sen
 
 Core Features and Architectural Primitives
 ------------------------------------------
-
 * Deterministic Circuit Breaking (Lockout Engine): Tracks remediation counts permanently across application Restarts using an embedded SQLite state engine. If a service continues failing beyond its maximum configured retries, the circuit breaker opens (isLockedOut = true), halting all scripts to prevent infinite restart loops until a manual operator reset is signaled.
 * Blast Radius Protection (Safety Boundaries): Implements a lexical parser that evaluates user-configured shell strings prior to execution. If dangerous commands (e.g., rm -rf, mkfs, dd) or unparameterized targets are injected by config typo, execution is aborted, a critical safety violation is logged, and the circuit breaker trips instantly.
 * Closed-Loop Post-Remediation Verification: After launching a remediation command, the execution block enforces a stabilization pause followed immediately by an inline health re-check. A service recovery is only logged as a success if the endpoint actually returns a healthy status code.
