@@ -1,0 +1,10 @@
+{"timestamp":"2026-05-26T20:33:27.669413029+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"create_incident","result":"success","ticket":"INC0001016"}
+{"timestamp":"2026-05-26T20:33:29.682269593+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"remediation_attempt_1_verification","result":"failed","ticket":"INC0001016"}
+{"timestamp":"2026-05-26T21:22:13.25108478+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"create_incident","result":"success","ticket":"INC0001472"}
+{"timestamp":"2026-05-26T21:22:13.252165609+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"CRITICAL_SAFETY_VIOLATION","result":"aborted"}
+{"timestamp":"2026-05-26T21:22:13.387181778+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"circuit_breaker_lockout","result":"failed","ticket":"INC0001472"}
+{"timestamp":"2026-05-26T21:23:33.143468718+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"create_incident","result":"success","ticket":"INC0001452"}
+{"timestamp":"2026-05-26T21:23:35.155137185+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"remediation_attempt_1_verification","result":"failed","ticket":"INC0001452"}
+{"timestamp":"2026-05-26T21:24:07.1893773+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"remediation_attempt_2_verification","result":"failed","ticket":"INC0001452"}
+{"timestamp":"2026-05-26T21:24:39.219711051+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"remediation_attempt_3_verification","result":"failed","ticket":"INC0001452"}
+{"timestamp":"2026-05-26T21:24:39.449092615+01:00","service":"inventory-api","host":"http://localhost:8080/health","action":"circuit_breaker_lockout","result":"failed","ticket":"INC0001452"}
